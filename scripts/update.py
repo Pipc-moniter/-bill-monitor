@@ -114,13 +114,17 @@ def classify(api_key, bill, summary):
         "max_tokens": 200,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+    if workspace:
+        headers["anthropic-workspace-id"] = workspace
     for i in range(4):
         try:
-            req = urllib.request.Request(ANTHROPIC_URL, data=body, headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            })
+            req = urllib.request.Request(ANTHROPIC_URL, data=body, headers=headers)
             with urllib.request.urlopen(req, timeout=60) as r:
                 res = json.loads(r.read())
             text = "".join(c.get("text", "") for c in res.get("content", []))
@@ -131,7 +135,15 @@ def classify(api_key, bill, summary):
             if e.code in (429, 500, 502, 503, 529):
                 time.sleep(5 * (i + 1))
                 continue
-            raise
+            detail = e.read().decode("utf-8", errors="replace")[:500]
+            hint = {
+                401: "Anthropic API 키가 올바르지 않습니다. 키를 새로 만들어 ANTHROPIC_API_KEY에 다시 등록하세요. "
+                     "회사·기관 계정 키라면 ANTHROPIC_WORKSPACE_ID도 등록해야 할 수 있습니다.",
+                400: "요청이 거절되었습니다. 크레딧 잔액(Billing)을 확인하세요.",
+                403: "이 키로는 API를 쓸 권한이 없습니다. 콘솔에서 키 권한을 확인하세요.",
+                404: "모델 이름이 잘못되었습니다. config/settings.json의 model 값을 확인하세요.",
+            }.get(e.code, "")
+            sys.exit(f"\n[오류] Anthropic API {e.code}\n{hint}\n응답 내용: {detail}")
         except (AttributeError, json.JSONDecodeError):
             time.sleep(1)
     return None
@@ -153,8 +165,8 @@ def save_json(path, obj):
 
 
 def main():
-    assembly_key = os.environ.get("ASSEMBLY_API_KEY")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    assembly_key = os.environ.get("ASSEMBLY_API_KEY", "").strip()
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not assembly_key or not anthropic_key:
         sys.exit("ASSEMBLY_API_KEY, ANTHROPIC_API_KEY 환경변수가 필요합니다.")
 
