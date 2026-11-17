@@ -28,6 +28,9 @@ CACHE_PATH = os.path.join(ROOT, "data/classify_cache.json")
 
 # 열린국회정보 '국회의원 발의법률안' API
 LIST_API = "https://open.assembly.go.kr/portal/openapi/nzmimeepazxkubdpn"
+SUMMARY_API = "https://open.assembly.go.kr/portal/openapi/BPMBILLSUMMARY"
+# 한 번 실행에서 AI 분류에 쓸 최대 시간(분). 넘으면 그때까지 결과를 저장하고 마친다.
+TIME_BUDGET_MIN = float(SETTINGS.get("time_budget_minutes", 150))
 DETAIL_URL = "https://likms.assembly.go.kr/bill/billDetail.do?billId={}"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
@@ -75,22 +78,23 @@ def fetch_bill_list(api_key):
     return rows
 
 
-def fetch_summary(bill_id):
-    """의안정보시스템 상세 페이지에서 제안이유 및 주요내용을 추출한다."""
+def fetch_summary(api_key, bill_no):
+    """열린국회정보 '법률안 제안이유 및 주요내용' API(BPMBILLSUMMARY)에서 본문을 가져온다."""
+    q = urllib.parse.urlencode({"KEY": api_key, "Type": "json", "pIndex": 1, "pSize": 5, "BILL_NO": bill_no})
     try:
-        page = http_get(DETAIL_URL.format(bill_id), timeout=20)
+        data = json.loads(http_get(f"{SUMMARY_API}?{q}", timeout=15, retries=2))
     except Exception as e:
-        print(f"  요약 수집 실패 {bill_id}: {e}")
+        print(f"  요약 수집 실패 {bill_no}: {e}")
         return ""
-    m = re.search(r'id="summaryContentDiv"[^>]*>(.*?)</div>', page, re.DOTALL)
-    if not m:
-        m = re.search(r'제안이유\s*및\s*주요내용(.*?)</div>', page, re.DOTALL)
-    if not m:
+    block = data.get("BPMBILLSUMMARY")
+    if not block or len(block) < 2:
         return ""
-    text = re.sub(r"<br\s*/?>", "\n", m.group(1))
-    text = re.sub(r"<[^>]+>", "", text)
-    text = html.unescape(text)
-    return re.sub(r"[ \t]+", " ", text).strip()[:6000]
+    for row in block[1].get("row", []):
+        text = row.get("SUMMARY") or row.get("BILL_SUMMARY") or ""
+        if text:
+            text = html.unescape(re.sub(r"<[^>]+>", "\n", text))
+            return re.sub(r"[ \t]+", " ", text).strip()[:6000]
+    return ""
 
 
 def classify(api_key, bill, summary):
@@ -165,6 +169,7 @@ def save_json(path, obj):
 
 
 def main():
+    sys.stdout.reconfigure(line_buffering=True)  # 진행 상황이 로그에 바로 보이도록
     assembly_key = os.environ.get("ASSEMBLY_API_KEY", "").strip()
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not assembly_key or not anthropic_key:
@@ -181,20 +186,26 @@ def main():
     limit = int(SETTINGS["max_classify_per_run"])
     print(f"2) AI 분류 대상 {len(todo)}건 (이번 실행 최대 {limit}건)")
 
-    done = 0
+    done, no_summary, started = 0, 0, time.time()
     for r in todo[:limit]:
-        summary = fetch_summary(r["BILL_ID"])
+        if (time.time() - started) / 60 > TIME_BUDGET_MIN:
+            print(f"  시간 한도({TIME_BUDGET_MIN:.0f}분) 도달 — 나머지는 다음 실행에서 이어서 분류")
+            break
+        summary = fetch_summary(assembly_key, r.get("BILL_NO", ""))
+        if not summary:
+            no_summary += 1
         result = classify(anthropic_key, r, summary)
         if result is None:
             continue
         cache[r["BILL_ID"]] = {"h": CRITERIA_HASH, "has_summary": bool(summary), **result}
         done += 1
-        if done % 50 == 0:
+        if done % 25 == 0:
             save_json(CACHE_PATH, cache)  # 중간 저장
-            print(f"  분류 {done}건 완료")
-        time.sleep(0.2)
+            mins = (time.time() - started) / 60
+            print(f"  분류 {done}건 완료 ({mins:.0f}분 경과, 본문 없음 {no_summary}건)")
+        time.sleep(0.1)
     save_json(CACHE_PATH, cache)
-    print(f"  이번 실행 분류 {done}건")
+    print(f"  이번 실행 분류 {done}건 (본문 없이 의안명으로만 판단 {no_summary}건)")
 
     print("3) 결과 생성")
     include, exclude = OVERRIDES.get("include", {}), OVERRIDES.get("exclude", {})
