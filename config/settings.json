@@ -1,0 +1,7 @@
+{
+  "site_title": "개인정보 입법동향 모니터링",
+  "assembly_age": "22",
+  "start_date": "2024-05-30",
+  "model": "claude-haiku-5-5",
+  "max_classify_per_run": 1500
+}

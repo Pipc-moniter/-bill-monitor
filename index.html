@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>개인정보 입법동향 모니터링</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --ink: #1b1f24; --sub: #5b6470; --line: #e3e6ea;
+    --accent: #1f5fbf; --accent-soft: #e8f0fb; --ok: #1d7a46; --warn: #a86400;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; font-size: 15px; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
+  header { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  h1 { font-size: 24px; margin: 0; letter-spacing: -0.02em; }
+  .meta { color: var(--sub); font-size: 13px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 26px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--sub); font-size: 13px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .panel h2 { font-size: 15px; margin: 0 0 12px; }
+  #chart svg { width: 100%; height: 180px; display: block; }
+  #chart .bar { fill: var(--accent); }
+  #chart .bar:hover { fill: #164a96; }
+  #chart text { font-size: 10px; fill: var(--sub); }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .filters input, .filters select { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; background: #fff; }
+  .filters input[type=search] { flex: 1; min-width: 220px; }
+  .filters button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 8px 12px; font: inherit; cursor: pointer; }
+  .count { color: var(--sub); font-size: 13px; margin-left: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; color: var(--sub); font-weight: 600; white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--sub); }
+  td.nowrap { white-space: nowrap; }
+  tr.row { cursor: pointer; }
+  tr.row:hover td { background: #fafbfc; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #eef0f3; color: var(--sub); white-space: nowrap; }
+  .badge.done { background: #e6f4ec; color: var(--ok); }
+  .badge.pend { background: var(--accent-soft); color: var(--accent); }
+  .tag { font-size: 11px; color: var(--warn); margin-left: 4px; }
+  tr.detail td { background: #fafbfc; color: var(--sub); font-size: 14px; }
+  .pager { display: flex; justify-content: center; gap: 6px; margin-top: 14px; }
+  .pager button { min-width: 34px; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  .pager button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .notice { font-size: 13px; color: var(--sub); line-height: 1.6; }
+  .empty { text-align: center; color: var(--sub); padding: 40px 0; }
+  @media (max-width: 760px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .hide-m { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="title">개인정보 입법동향 모니터링</h1>
+      <div class="meta">국회 의원발의 법률안 중 개인정보 관련 법안</div>
+    </div>
+    <div class="meta" id="updated">불러오는 중…</div>
+  </header>
+
+  <section class="stats">
+    <div class="stat"><span>관련 법안</span><b id="s-total">-</b></div>
+    <div class="stat"><span>최근 30일 발의</span><b id="s-recent">-</b></div>
+    <div class="stat"><span>계류 중</span><b id="s-pending">-</b></div>
+    <div class="stat"><span>처리 완료</span><b id="s-done">-</b></div>
+  </section>
+
+  <section class="panel">
+    <h2>월별 발의 추이</h2>
+    <div id="chart"></div>
+  </section>
+
+  <section class="panel">
+    <div class="filters">
+      <input type="search" id="q" placeholder="의안명, 제안자, 의안번호 검색">
+      <input type="date" id="from" aria-label="시작일">
+      <span class="meta">~</span>
+      <input type="date" id="to" aria-label="종료일">
+      <select id="status"><option value="">전체 상태</option></select>
+      <button id="reset">초기화</button>
+      <span class="count" id="count"></span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th class="num">연번</th>
+          <th class="hide-m">의안번호</th>
+          <th>의안명</th>
+          <th class="hide-m">제안자</th>
+          <th class="hide-m">대표발의</th>
+          <th>제안일자</th>
+          <th>심사진행상태</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="pager" id="pager"></div>
+  </section>
+
+  <p class="notice" id="notice">
+    법안 행을 누르면 개인정보 관련으로 분류된 근거를 볼 수 있습니다.
+    분류는 AI가 제안이유를 읽고 판단한 결과로, 담당자 검토 전의 참고 자료입니다.
+  </p>
+</div>
+
+<script>
+const PAGE = 50;
+let ALL = [], VIEW = [], page = 1, openNo = null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function load() {
+  try {
+    const res = await fetch("data/bills.json?t=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    ALL = data.bills || [];
+    if (data.site_title) { $("title").textContent = data.site_title; document.title = data.site_title; }
+    $("updated").textContent = data.updated_at
+      ? `마지막 갱신 ${data.updated_at} · ${data.start_date} 이후 ${Number(data.scanned).toLocaleString()}건 검토`
+      : "아직 수집된 데이터가 없습니다";
+    if (data.pending > 0) {
+      $("notice").innerHTML += ` <br>현재 AI 분류 대기 중인 법안이 ${Number(data.pending).toLocaleString()}건 있으며, 매일 순차적으로 반영됩니다.`;
+    }
+    initFilters();
+    renderStats();
+    renderChart();
+    apply();
+  } catch (e) {
+    $("updated").textContent = "데이터를 불러오지 못했습니다";
+    $("tbody").innerHTML = `<tr><td colspan="7" class="empty">data/bills.json을 읽을 수 없습니다.</td></tr>`;
+  }
+}
+
+function initFilters() {
+  const statuses = [...new Set(ALL.map((b) => b.status))].sort();
+  $("status").innerHTML += statuses.map((s) => `<option>${esc(s)}</option>`).join("");
+  ["q", "from", "to", "status"].forEach((id) => $(id).addEventListener("input", () => { page = 1; apply(); }));
+  $("reset").addEventListener("click", () => {
+    ["q", "from", "to", "status"].forEach((id) => ($(id).value = ""));
+    page = 1; apply();
+  });
+}
+
+function renderStats() {
+  const cut = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  $("s-total").textContent = ALL.length.toLocaleString();
+  $("s-recent").textContent = ALL.filter((b) => b.date >= cut).length.toLocaleString();
+  $("s-pending").textContent = ALL.filter((b) => b.status === "계류").length.toLocaleString();
+  $("s-done").textContent = ALL.filter((b) => b.status !== "계류").length.toLocaleString();
+}
+
+function renderChart() {
+  const counts = {};
+  ALL.forEach((b) => { const m = (b.date || "").slice(0, 7); if (m) counts[m] = (counts[m] || 0) + 1; });
+  const months = Object.keys(counts).sort().slice(-24);
+  if (!months.length) { $("chart").innerHTML = `<div class="empty">표시할 데이터가 없습니다</div>`; return; }
+  const W = 1000, H = 180, padB = 22, padT = 16;
+  const max = Math.max(...months.map((m) => counts[m]));
+  const bw = W / months.length;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="월별 발의 건수">`;
+  months.forEach((m, i) => {
+    const h = ((H - padB - padT) * counts[m]) / max;
+    const x = i * bw + bw * 0.18, w = bw * 0.64, y = H - padB - h;
+    svg += `<rect class="bar" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>${m}: ${counts[m]}건</title></rect>`;
+    svg += `<text x="${x + w / 2}" y="${y - 4}" text-anchor="middle">${counts[m]}</text>`;
+    if (i % Math.ceil(months.length / 12) === 0) svg += `<text x="${x + w / 2}" y="${H - 6}" text-anchor="middle">${m.slice(2).replace("-", ".")}</text>`;
+  });
+  $("chart").innerHTML = svg + "</svg>";
+}
+
+function apply() {
+  const q = $("q").value.trim().toLowerCase();
+  const from = $("from").value, to = $("to").value, st = $("status").value;
+  VIEW = ALL.filter((b) =>
+    (!q || [b.name, b.proposer, b.rep, b.no].some((v) => String(v).toLowerCase().includes(q))) &&
+    (!from || b.date >= from) && (!to || b.date <= to) && (!st || b.status === st));
+  $("count").textContent = `${VIEW.length.toLocaleString()}건`;
+  renderTable();
+}
+
+function renderTable() {
+  const pages = Math.max(1, Math.ceil(VIEW.length / PAGE));
+  page = Math.min(page, pages);
+  const start = (page - 1) * PAGE;
+  const rows = VIEW.slice(start, start + PAGE);
+  if (!rows.length) {
+    $("tbody").innerHTML = `<tr><td colspan="7" class="empty">조건에 맞는 법안이 없습니다</td></tr>`;
+  } else {
+    $("tbody").innerHTML = rows.map((b, i) => {
+      const badge = b.status === "계류" ? "pend" : "done";
+      const tag = b.source === "manual" ? `<span class="tag">수동 지정</span>` : b.title_only ? `<span class="tag">제목 기준</span>` : "";
+      let html = `<tr class="row" data-no="${esc(b.no)}">
+        <td class="num">${start + i + 1}</td>
+        <td class="hide-m nowrap">${esc(b.no)}</td>
+        <td><a href="${esc(b.link)}" target="_blank" rel="noopener">${esc(b.name)}</a>${tag}</td>
+        <td class="hide-m">${esc(b.proposer)}</td>
+        <td class="hide-m nowrap">${esc(b.rep)}</td>
+        <td class="nowrap">${esc(b.date)}</td>
+        <td><span class="badge ${badge}">${esc(b.status)}</span></td></tr>`;
+      if (openNo === b.no) {
+        html += `<tr class="detail"><td></td><td colspan="6"><b>분류 근거</b> ${esc(b.reason || "-")}${b.committee ? `<br><b>소관위원회</b> ${esc(b.committee)}` : ""}</td></tr>`;
+      }
+      return html;
+    }).join("");
+  }
+  document.querySelectorAll("tr.row").forEach((tr) => tr.addEventListener("click", (e) => {
+    if (e.target.closest("a")) return;
+    openNo = openNo === tr.dataset.no ? null : tr.dataset.no;
+    renderTable();
+  }));
+  renderPager(pages);
+}
+
+function renderPager(pages) {
+  if (pages <= 1) { $("pager").innerHTML = ""; return; }
+  const lo = Math.max(1, page - 4), hi = Math.min(pages, lo + 8);
+  let html = page > 1 ? `<button data-p="${page - 1}">‹</button>` : "";
+  for (let p = lo; p <= hi; p++) html += `<button data-p="${p}" class="${p === page ? "on" : ""}">${p}</button>`;
+  if (page < pages) html += `<button data-p="${page + 1}">›</button>`;
+  $("pager").innerHTML = html;
+  $("pager").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    page = Number(b.dataset.p); renderTable(); window.scrollTo({ top: $("q").offsetTop - 20, behavior: "smooth" });
+  }));
+}
+
+load();
+</script>
+</body>
+</html>
