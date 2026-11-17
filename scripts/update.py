@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -186,24 +187,31 @@ def main():
     limit = int(SETTINGS["max_classify_per_run"])
     print(f"2) AI 분류 대상 {len(todo)}건 (이번 실행 최대 {limit}건)")
 
-    done, no_summary, started = 0, 0, time.time()
-    for r in todo[:limit]:
-        if (time.time() - started) / 60 > TIME_BUDGET_MIN:
-            print(f"  시간 한도({TIME_BUDGET_MIN:.0f}분) 도달 — 나머지는 다음 실행에서 이어서 분류")
-            break
+    def work(r):
         summary = fetch_summary(assembly_key, r.get("BILL_NO", ""))
-        if not summary:
-            no_summary += 1
-        result = classify(anthropic_key, r, summary)
-        if result is None:
-            continue
-        cache[r["BILL_ID"]] = {"h": CRITERIA_HASH, "has_summary": bool(summary), **result}
-        done += 1
-        if done % 25 == 0:
-            save_json(CACHE_PATH, cache)  # 중간 저장
-            mins = (time.time() - started) / 60
-            print(f"  분류 {done}건 완료 ({mins:.0f}분 경과, 본문 없음 {no_summary}건)")
-        time.sleep(0.1)
+        return r, summary, classify(anthropic_key, r, summary)
+
+    # 여러 건을 동시에 처리해 속도를 높인다.
+    workers = int(SETTINGS.get("workers", 8))
+    queue = todo[:limit]
+    done, no_summary, started, last_report = 0, 0, time.time(), 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for i in range(0, len(queue), workers * 3):
+            if (time.time() - started) / 60 > TIME_BUDGET_MIN:
+                print(f"  시간 한도({TIME_BUDGET_MIN:.0f}분) 도달 — 나머지는 다음 실행에서 이어서 분류")
+                break
+            for r, summary, result in pool.map(work, queue[i:i + workers * 3]):
+                if not summary:
+                    no_summary += 1
+                if result is None:
+                    continue
+                cache[r["BILL_ID"]] = {"h": CRITERIA_HASH, "has_summary": bool(summary), **result}
+                done += 1
+            if done - last_report >= 50:
+                last_report = done
+                save_json(CACHE_PATH, cache)  # 중간 저장
+                mins = (time.time() - started) / 60
+                print(f"  분류 {done}건 완료 ({mins:.0f}분 경과, 본문 없음 {no_summary}건)")
     save_json(CACHE_PATH, cache)
     print(f"  이번 실행 분류 {done}건 (본문 없이 의안명으로만 판단 {no_summary}건)")
 
@@ -238,10 +246,19 @@ def main():
         })
     bills.sort(key=lambda b: (b["date"], b["no"]), reverse=True)
 
+    # 모니터링 기간: AI 분류까지 마친 법안의 발의일 범위(최신부터 분류하므로 연속 구간)
+    checked = [r.get("PROPOSE_DT", "") for r in rows
+               if cache.get(r["BILL_ID"], {}).get("h") == CRITERIA_HASH and r.get("PROPOSE_DT")]
+    period_from = min(checked) if checked else ""
+    period_to = max(checked) if checked else ""
+
     save_json(OUT_PATH, {
         "site_title": SETTINGS["site_title"],
         "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
         "start_date": SETTINGS["start_date"],
+        "period_from": period_from,
+        "period_to": period_to,
+        "checked": len(checked),
         "scanned": len(rows),
         "pending": pending,
         "bills": bills,
