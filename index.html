@@ -20,6 +20,7 @@
   .period { display: inline-block; background: var(--accent-soft); color: var(--accent); border-radius: 8px;
     padding: 6px 12px; font-size: 14px; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
   .period span { font-weight: 600; margin-right: 4px; }
+  .period small { font-size: 13px; margin-left: 2px; }
   @media (max-width: 760px) { .period-box { text-align: left; } }
   .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
   .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
@@ -69,7 +70,7 @@
       <div class="meta">국회 의원발의 법률안 중 개인정보 관련 법안</div>
     </div>
     <div class="period-box">
-      <div class="period"><span>모니터링 기간</span> <b id="period">-</b></div>
+      <div class="period"><span>모니터링 기간</span> <b id="period">-</b> <small id="checked"></small></div>
       <div class="meta" id="updated">불러오는 중…</div>
     </div>
   </header>
@@ -138,8 +139,9 @@ async function load() {
     const dot = (d) => String(d).replaceAll("-", ".");
     $("period").textContent = pFrom ? `${dot(pFrom)} ~ ${dot(pTo)}` : "수집 전";
     const checked = data.checked ?? data.scanned;
+    if (pFrom && checked) $("checked").textContent = `(총 ${Number(checked).toLocaleString()}건 검토)`;
     $("updated").textContent = data.updated_at
-      ? `마지막 갱신 ${data.updated_at} · 발의 법안 ${Number(checked).toLocaleString()}건 검토`
+      ? `마지막 갱신 ${data.updated_at}`
       : "아직 수집된 데이터가 없습니다";
     if (data.pending > 0) {
       $("notice").innerHTML += ` <br>현재 AI 분류 대기 중인 법안이 ${Number(data.pending).toLocaleString()}건 있으며, 매일 순차적으로 반영됩니다.`;
