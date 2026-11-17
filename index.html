@@ -16,6 +16,11 @@
   header { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
   h1 { font-size: 24px; margin: 0; letter-spacing: -0.02em; }
   .meta { color: var(--sub); font-size: 13px; }
+  .period-box { text-align: right; }
+  .period { display: inline-block; background: var(--accent-soft); color: var(--accent); border-radius: 8px;
+    padding: 6px 12px; font-size: 14px; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+  .period span { font-weight: 600; margin-right: 4px; }
+  @media (max-width: 760px) { .period-box { text-align: left; } }
   .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
   .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
   .stat b { display: block; font-size: 26px; margin-top: 4px; font-variant-numeric: tabular-nums; }
@@ -63,7 +68,10 @@
       <h1 id="title">개인정보 입법동향 모니터링</h1>
       <div class="meta">국회 의원발의 법률안 중 개인정보 관련 법안</div>
     </div>
-    <div class="meta" id="updated">불러오는 중…</div>
+    <div class="period-box">
+      <div class="period"><span>모니터링 기간</span> <b id="period">-</b></div>
+      <div class="meta" id="updated">불러오는 중…</div>
+    </div>
   </header>
 
   <section class="stats">
@@ -124,8 +132,14 @@ async function load() {
     const data = await res.json();
     ALL = data.bills || [];
     if (data.site_title) { $("title").textContent = data.site_title; document.title = data.site_title; }
+    // 모니터링 기간: 분류를 마친 법안의 발의일 범위 (예전 데이터 파일이면 관련 법안 날짜로 대신 표시)
+    const dates = ALL.map((b) => b.date).filter(Boolean).sort();
+    const pFrom = data.period_from || dates[0], pTo = data.period_to || dates[dates.length - 1];
+    const dot = (d) => String(d).replaceAll("-", ".");
+    $("period").textContent = pFrom ? `${dot(pFrom)} ~ ${dot(pTo)}` : "수집 전";
+    const checked = data.checked ?? data.scanned;
     $("updated").textContent = data.updated_at
-      ? `마지막 갱신 ${data.updated_at} · ${data.start_date} 이후 ${Number(data.scanned).toLocaleString()}건 검토`
+      ? `마지막 갱신 ${data.updated_at} · 발의 법안 ${Number(checked).toLocaleString()}건 검토`
       : "아직 수집된 데이터가 없습니다";
     if (data.pending > 0) {
       $("notice").innerHTML += ` <br>현재 AI 분류 대기 중인 법안이 ${Number(data.pending).toLocaleString()}건 있으며, 매일 순차적으로 반영됩니다.`;
