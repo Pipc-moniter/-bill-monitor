@@ -144,7 +144,7 @@
       <input type="date" id="from" aria-label="시작일">
       <span class="meta">~</span>
       <input type="date" id="to" aria-label="종료일">
-      <select id="tierSel"><option value="">전체 구분</option><option value="1">구분 1 (개인정보 보호법)</option><option value="2">구분 2 (개인정보 수집 제공 등 처리 수반)</option><option value="3">구분 3 (개인정보위 정책상 검토 필요)</option></select>
+      <select id="tierSel"><option value="">전체 구분</option><option value="1">구분 1 (개인정보 보호법 직접 관련)</option><option value="2">구분 2 (개인정보 수집 제공 등 처리 수반)</option><option value="3">구분 3 (개인정보위 정책상 검토 필요)</option></select>
       <select id="status"><option value="">전체 상태</option></select>
       <button id="reset">초기화</button>
       <span class="count" id="count"></span>
@@ -229,7 +229,7 @@ function renderStats() {
 
 // 구분별 색: 표의 구분 배지와 같은 색을 쓴다
 const TIER_COLORS = { "1": "#2a78d6", "2": "#eb6834", "3": "#1baf7a" };
-const TIER_NAMES = { "1": "구분 1 (개인정보 보호법)", "2": "구분 2 (개인정보 수집 제공 등 처리 수반)", "3": "구분 3 (개인정보위 정책상 검토 필요)" };
+const TIER_NAMES = { "1": "구분 1 (개인정보 보호법 직접 관련)", "2": "구분 2 (개인정보 수집 제공 등 처리 수반)", "3": "구분 3 (개인정보위 정책상 검토 필요)" };
 
 function showTip(e, html) {
   const t = $("tip"); t.innerHTML = html; t.style.display = "block";
@@ -307,7 +307,7 @@ function apply() {
   renderTable();
 }
 
-const TIER = { "1": ["①", "구분 1 (개인정보 보호법)"], "2": ["②", "구분 2 (개인정보 수집 제공 등 처리 수반)"], "3": ["③", "구분 3 (개인정보위 정책상 검토 필요)"], "M": ["수동", "담당자 지정"] };
+const TIER = { "1": ["①", "구분 1 (개인정보 보호법 직접 관련)"], "2": ["②", "구분 2 (개인정보 수집 제공 등 처리 수반)"], "3": ["③", "구분 3 (개인정보위 정책상 검토 필요)"], "M": ["수동", "담당자 지정"] };
 function tierBadge(t) {
   const v = TIER[t] || TIER["2"];
   return `<span class="tier t${esc(t || "2")}" title="${v[1]}">${v[0]}</span>`;
