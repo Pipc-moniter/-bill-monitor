@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>개인정보 입법동향 모니터링</title>
+<title>알법 · 개인정보 입법동향 모니터링</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gamja+Flower&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg: #f6f7f9; --card: #fff; --ink: #1b1f24; --sub: #5b6470; --line: #e3e6ea;
@@ -14,7 +17,16 @@
     font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; font-size: 15px; }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
   header { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
-  h1 { font-size: 24px; margin: 0; letter-spacing: -0.02em; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
+  header { align-items: center; }
+  .brand { display: flex; align-items: center; gap: 20px; }
+  .logo { display: flex; flex-direction: column; line-height: 1; text-align: center; font-family: "Gamja Flower", "Pretendard", cursive; }
+  .logo .s { font-size: 19px; color: #5b8def; letter-spacing: .04em; }
+  .logo .b { font-size: 52px; color: #1f5fbf; margin-top: 2px; }
+  .logo .b em { font-style: normal; color: #ff8a5c; }
+  .brand .bar { width: 1px; height: 52px; background: var(--line); }
+  .titles .meta { margin-top: 4px; }
+  @media (max-width: 760px) { .logo .b { font-size: 42px; } .brand { gap: 14px; } h1 { font-size: 18px; } }
   .meta { color: var(--sub); font-size: 13px; }
   .period-box { text-align: right; }
   .period { display: inline-block; background: var(--accent-soft); color: var(--accent); border-radius: 8px;
@@ -70,9 +82,13 @@
 <body>
 <div class="wrap">
   <header>
-    <div>
-      <h1 id="title">개인정보 입법동향 모니터링</h1>
-      <div class="meta">국회 의원발의 법률안 중 개인정보 관련 법안</div>
+    <div class="brand">
+      <div class="logo" aria-label="법 알리미 알법"><div class="s">법 알리미</div><div class="b">알<em>법</em></div></div>
+      <div class="bar"></div>
+      <div class="titles">
+        <h1 id="title">개인정보 입법동향 모니터링</h1>
+        <div class="meta">국회 의원발의 법률안 중 개인정보 관련 법안</div>
+      </div>
     </div>
     <div class="period-box">
       <div class="period"><span>모니터링 기간</span> <b id="period">-</b> <small id="checked"></small></div>
@@ -139,7 +155,7 @@ async function load() {
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
     ALL = data.bills || [];
-    if (data.site_title) { $("title").textContent = data.site_title; document.title = data.site_title; }
+    if (data.site_title) { $("title").textContent = data.site_title; document.title = "알법 · " + data.site_title; }
     // 모니터링 기간: 분류를 마친 법안의 발의일 범위 (예전 데이터 파일이면 관련 법안 날짜로 대신 표시)
     const dates = ALL.map((b) => b.date).filter(Boolean).sort();
     const pFrom = data.period_from || dates[0], pTo = data.period_to || dates[dates.length - 1];
