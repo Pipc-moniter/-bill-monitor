@@ -119,6 +119,111 @@ def fetch_summary(api_key, bill_no):
     return ""
 
 
+def build_prompt(bill, summary):
+    return f"""당신은 개인정보보호위원회의 주간 입법동향 모니터링 담당자입니다.
+아래 기준에 따라 법안을 ①, ②, ③, 무관 중 하나로 분류하세요.
+이 분류는 담당자가 최종 검토하기 전 1차 선별이므로, 놓치는 것보다 넓게 고르는 편이 낫습니다.
+
+<기준>
+{CRITERIA}
+</기준>
+
+<법안>
+의안명: {bill.get('BILL_NAME', '')}
+제안이유 및 주요내용:
+{summary or '(본문 없음: 의안명만으로 판단)'}
+</법안>
+
+다음 JSON 한 줄로만 답하세요. tier는 "1", "2", "3", "0"(무관) 중 하나입니다.
+{{"tier": "1", "reason": "판단 근거 한 문장"}}"""
+
+
+def parse_answer(text):
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        parsed = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    tier = str(parsed.get("tier", "0")).strip()
+    tier = tier if tier in ("1", "2", "3") else "0"
+    return {"tier": tier, "relevant": tier != "0", "reason": str(parsed.get("reason", ""))[:300]}
+
+
+def anthropic_call(api_key, method, path, body=None, raw=False):
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+    if workspace:
+        headers["anthropic-workspace-id"] = workspace
+    url = path if path.startswith("http") else "https://api.anthropic.com" + path
+    data = json.dumps(body).encode() if body is not None else None
+    for i in range(6):
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            with urllib.request.urlopen(req, timeout=300) as r:
+                out = r.read()
+            return out.decode("utf-8") if raw else json.loads(out)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 529) and i < 5:
+                time.sleep(10 * (i + 1))
+                continue
+            detail = e.read().decode("utf-8", errors="replace")[:500]
+            hint = {
+                401: "Anthropic API 키가 올바르지 않습니다. ANTHROPIC_API_KEY를 다시 등록하세요.",
+                400: "요청이 거절되었습니다. 크레딧 잔액(Billing)을 확인하세요.",
+                403: "이 키로는 API를 쓸 권한이 없습니다.",
+                404: "모델 이름 또는 주소가 잘못되었습니다. config/settings.json의 model 값을 확인하세요.",
+            }.get(e.code, "")
+            sys.exit(f"\n[오류] Anthropic API {e.code}\n{hint}\n응답 내용: {detail}")
+        except (urllib.error.URLError, TimeoutError) as e:
+            if i < 5:
+                time.sleep(10 * (i + 1))
+                continue
+            raise
+
+
+PENDING_PATH = os.path.join(ROOT, "data/pending_batch.json")
+
+
+def collect_batch(api_key, batch_id, cache, meta, deadline):
+    """일괄 처리가 끝날 때까지 기다렸다가 결과를 캐시에 넣는다. 시간 안에 안 끝나면 False."""
+    last = ""
+    while True:
+        b = anthropic_call(api_key, "GET", f"/v1/messages/batches/{batch_id}")
+        rc = b.get("request_counts", {})
+        line = (f"  일괄 처리 상태: {b.get('processing_status')} — 완료 {rc.get('succeeded', 0)}, "
+                f"처리 중 {rc.get('processing', 0)}, 오류 {rc.get('errored', 0)}")
+        if line != last:
+            print(line + f" ({datetime.now(KST).strftime('%H:%M')})")
+            last = line
+        if b.get("processing_status") == "ended":
+            break
+        if time.time() > deadline:
+            print("  시간 한도 도달 — 일괄 처리는 계속 진행되며, 결과는 다음 실행에서 받아옵니다.")
+            return False
+        time.sleep(30)
+    text = anthropic_call(api_key, "GET", b["results_url"], raw=True)
+    ok = bad = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        res = item.get("result", {})
+        parsed = None
+        if res.get("type") == "succeeded":
+            msg = res.get("message", {})
+            parsed = parse_answer("".join(c.get("text", "") for c in msg.get("content", [])))
+        info = meta.get(item.get("custom_id"), {})
+        if parsed and info.get("h") == CRITERIA_HASH:
+            cache[info["bill_id"]] = {"h": CRITERIA_HASH, "has_summary": info.get("has_summary", False), **parsed}
+            ok += 1
+        else:
+            bad += 1
+    print(f"  결과 반영 {ok}건, 실패 {bad}건(다음 실행에서 재시도)")
+    return True
+
+
 class RateLimiter:
     """여러 작업자가 동시에 AI를 호출해도 분당 요청 수를 넘지 않게 간격을 둔다.
     한도 초과(429)를 받으면 간격을 늘리고, 잘 되면 조금씩 줄인다."""
@@ -252,34 +357,54 @@ def main():
     limit = int(SETTINGS["max_classify_per_run"])
     print(f"2) AI 분류 대상 {len(todo)}건 (이번 실행 최대 {limit}건)")
 
-    def work(r):
-        summary = fetch_summary(assembly_key, r.get("BILL_NO", ""))
-        return r, summary, classify(anthropic_key, r, summary)
+    deadline = time.time() + TIME_BUDGET_MIN * 60
 
-    # 여러 건을 동시에 처리해 속도를 높인다.
-    workers = int(SETTINGS.get("workers", 8))
+    # 지난 실행에서 맡겨 둔 일괄 처리가 있으면 그 결과부터 받아온다.
+    pending = load_json(PENDING_PATH, None)
+    if pending:
+        print(f"  지난 실행의 일괄 처리({len(pending['meta'])}건) 결과 확인")
+        if collect_batch(anthropic_key, pending["id"], cache, pending["meta"], deadline):
+            os.remove(PENDING_PATH)
+            save_json(CACHE_PATH, cache)
+            todo = [r for r in todo if cache.get(r["BILL_ID"], {}).get("h") != CRITERIA_HASH]
+        else:
+            todo = []  # 아직 진행 중이면 새로 맡기지 않는다
+
     queue = todo[:limit]
-    done, no_summary, failed, started, last_report = 0, 0, 0, time.time(), 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for i in range(0, len(queue), workers * 3):
-            if (time.time() - started) / 60 > TIME_BUDGET_MIN:
-                print(f"  시간 한도({TIME_BUDGET_MIN:.0f}분) 도달 — 나머지는 다음 실행에서 이어서 분류")
-                break
-            for r, summary, result in pool.map(work, queue[i:i + workers * 3]):
-                if not summary:
-                    no_summary += 1
-                if result is None:
-                    failed += 1  # 다음 실행에서 다시 시도
-                    continue
-                cache[r["BILL_ID"]] = {"h": CRITERIA_HASH, "has_summary": bool(summary), **result}
-                done += 1
-            if done - last_report >= 50:
-                last_report = done
-                save_json(CACHE_PATH, cache)  # 중간 저장
-                mins = (time.time() - started) / 60
-                print(f"  분류 {done}건 완료 ({mins:.0f}분 경과, 본문 없음 {no_summary}건, 실패 {failed}건)")
-    save_json(CACHE_PATH, cache)
-    print(f"  이번 실행 분류 {done}건 (본문 없이 의안명으로만 판단 {no_summary}건, 실패 {failed}건은 다음 실행에서 재시도)")
+    for round_no in (1, 2):  # 실패한 건은 같은 실행 안에서 한 번 더 맡긴다
+        queue = [r for r in queue if cache.get(r["BILL_ID"], {}).get("h") != CRITERIA_HASH]
+        if not queue or time.time() > deadline:
+            break
+        if round_no == 2:
+            print(f"  실패한 {len(queue)}건 다시 요청")
+        # 2-1) 제안이유를 국회 API에서 동시에 받아온다.
+        print(f"  제안이유 수집 {len(queue)}건")
+        summaries, no_summary = {}, 0
+        with ThreadPoolExecutor(max_workers=int(SETTINGS.get("workers", 8))) as pool:
+            for n, (r, sm) in enumerate(pool.map(lambda r: (r, fetch_summary(assembly_key, r.get("BILL_NO", ""))), queue), 1):
+                summaries[r["BILL_ID"]] = sm
+                no_summary += not sm
+                if n % 200 == 0 or n == len(queue):
+                    print(f"    {n}/{len(queue)} (본문 없음 {no_summary}건)")
+
+        # 2-2) AI 분류를 일괄 처리로 한 번에 맡긴다(분당 요청 한도에 걸리지 않고 요금도 절반).
+        requests, meta = [], {}
+        for r in queue:
+            cid = re.sub(r"[^A-Za-z0-9_-]", "_", r["BILL_ID"])[:64]
+            sm = summaries.get(r["BILL_ID"], "")
+            meta[cid] = {"bill_id": r["BILL_ID"], "has_summary": bool(sm), "h": CRITERIA_HASH}
+            requests.append({"custom_id": cid, "params": {
+                "model": SETTINGS["model"], "max_tokens": 250,
+                "messages": [{"role": "user", "content": build_prompt(r, sm)}]}})
+        b = anthropic_call(anthropic_key, "POST", "/v1/messages/batches", {"requests": requests})
+        print(f"  AI 일괄 처리 요청 완료: {len(requests)}건 (보통 수 분~1시간 소요)")
+        save_json(PENDING_PATH, {"id": b["id"], "meta": meta})
+        finished = collect_batch(anthropic_key, b["id"], cache, meta, deadline)
+        if finished:
+            os.remove(PENDING_PATH)
+        save_json(CACHE_PATH, cache)
+        if not finished:
+            break
 
     print("3) 결과 생성")
     include, exclude = OVERRIDES.get("include", {}), OVERRIDES.get("exclude", {})
