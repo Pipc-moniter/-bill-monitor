@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
@@ -118,6 +119,37 @@ def fetch_summary(api_key, bill_no):
     return ""
 
 
+class RateLimiter:
+    """여러 작업자가 동시에 AI를 호출해도 분당 요청 수를 넘지 않게 간격을 둔다.
+    한도 초과(429)를 받으면 간격을 늘리고, 잘 되면 조금씩 줄인다."""
+
+    def __init__(self, rpm):
+        self.interval = 60.0 / max(1, rpm)
+        self.min_interval = self.interval
+        self.next_at = 0.0
+        self.lock = threading.Lock()
+
+    def wait(self):
+        with self.lock:
+            now = time.time()
+            at = max(now, self.next_at)
+            self.next_at = at + self.interval
+        if at > now:
+            time.sleep(at - now)
+
+    def slow_down(self, seconds):
+        with self.lock:
+            self.interval = min(self.interval * 1.5, 10.0)
+            self.next_at = max(self.next_at, time.time() + seconds)
+
+    def speed_up(self):
+        with self.lock:
+            self.interval = max(self.min_interval, self.interval * 0.98)
+
+
+LIMITER = RateLimiter(int(SETTINGS.get("anthropic_rpm", 40)))
+
+
 def classify(api_key, bill, summary):
     prompt = f"""당신은 개인정보보호위원회의 주간 입법동향 모니터링 담당자입니다.
 아래 기준에 따라 법안을 ①, ②, ③, 무관 중 하나로 분류하세요.
@@ -148,11 +180,13 @@ def classify(api_key, bill, summary):
     workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
     if workspace:
         headers["anthropic-workspace-id"] = workspace
-    for i in range(4):
+    for i in range(10):
         try:
+            LIMITER.wait()
             req = urllib.request.Request(ANTHROPIC_URL, data=body, headers=headers)
             with urllib.request.urlopen(req, timeout=60) as r:
                 res = json.loads(r.read())
+            LIMITER.speed_up()
             text = "".join(c.get("text", "") for c in res.get("content", []))
             m = re.search(r"\{.*\}", text, re.DOTALL)
             parsed = json.loads(m.group(0))
@@ -161,7 +195,11 @@ def classify(api_key, bill, summary):
             return {"tier": tier, "relevant": tier != "0", "reason": str(parsed.get("reason", ""))[:300]}
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 529):
-                time.sleep(5 * (i + 1))
+                try:
+                    wait = float(e.headers.get("retry-after") or 0)
+                except ValueError:
+                    wait = 0
+                LIMITER.slow_down(max(wait, 5 * (i + 1)))
                 continue
             detail = e.read().decode("utf-8", errors="replace")[:500]
             hint = {
@@ -221,7 +259,7 @@ def main():
     # 여러 건을 동시에 처리해 속도를 높인다.
     workers = int(SETTINGS.get("workers", 8))
     queue = todo[:limit]
-    done, no_summary, started, last_report = 0, 0, time.time(), 0
+    done, no_summary, failed, started, last_report = 0, 0, 0, time.time(), 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for i in range(0, len(queue), workers * 3):
             if (time.time() - started) / 60 > TIME_BUDGET_MIN:
@@ -231,6 +269,7 @@ def main():
                 if not summary:
                     no_summary += 1
                 if result is None:
+                    failed += 1  # 다음 실행에서 다시 시도
                     continue
                 cache[r["BILL_ID"]] = {"h": CRITERIA_HASH, "has_summary": bool(summary), **result}
                 done += 1
@@ -238,9 +277,9 @@ def main():
                 last_report = done
                 save_json(CACHE_PATH, cache)  # 중간 저장
                 mins = (time.time() - started) / 60
-                print(f"  분류 {done}건 완료 ({mins:.0f}분 경과, 본문 없음 {no_summary}건)")
+                print(f"  분류 {done}건 완료 ({mins:.0f}분 경과, 본문 없음 {no_summary}건, 실패 {failed}건)")
     save_json(CACHE_PATH, cache)
-    print(f"  이번 실행 분류 {done}건 (본문 없이 의안명으로만 판단 {no_summary}건)")
+    print(f"  이번 실행 분류 {done}건 (본문 없이 의안명으로만 판단 {no_summary}건, 실패 {failed}건은 다음 실행에서 재시도)")
 
     print("3) 결과 생성")
     include, exclude = OVERRIDES.get("include", {}), OVERRIDES.get("exclude", {})
@@ -274,11 +313,23 @@ def main():
         })
     bills.sort(key=lambda b: (b["date"], b["no"]), reverse=True)
 
-    # 모니터링 기간: AI 분류까지 마친 법안의 발의일 범위(최신부터 분류하므로 연속 구간)
-    checked = [r.get("PROPOSE_DT", "") for r in rows
-               if cache.get(r["BILL_ID"], {}).get("h") == CRITERIA_HASH and r.get("PROPOSE_DT")]
-    period_from = min(checked) if checked else ""
-    period_to = max(checked) if checked else ""
+    # 모니터링 기간: 최신 법안부터 거슬러 올라가며 '빠짐없이' 분류를 마친 구간만 기간으로 표시한다.
+    # 중간에 분류 안 된 법안이 있는 날짜는 기간에 넣지 않는다.
+    by_date = {}
+    for r in rows:
+        d = r.get("PROPOSE_DT") or ""
+        if d:
+            ok = cache.get(r["BILL_ID"], {}).get("h") == CRITERIA_HASH
+            by_date.setdefault(d, []).append(ok)
+    checked, period_from, period_to = [], "", ""
+    for d in sorted(by_date, reverse=True):
+        if not all(by_date[d]):
+            break
+        checked.extend([d] * len(by_date[d]))
+        period_to = period_to or d
+        period_from = d
+    # 화면의 관련 법안 수와 검토 건수가 같은 기간을 가리키도록, 기간 밖의 AI 분류 결과는 빼고 보여준다.
+    bills = [b for b in bills if b["source"] == "manual" or (period_from and b["date"] >= period_from)]
 
     save_json(OUT_PATH, {
         "site_title": SETTINGS["site_title"],
