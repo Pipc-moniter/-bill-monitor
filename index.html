@@ -56,6 +56,16 @@
   #tip { position: fixed; pointer-events: none; background: #1b1f24; color: #fff; font-size: 12px; line-height: 1.6;
     padding: 8px 10px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.18); display: none; z-index: 10; white-space: nowrap; }
   #tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+  .tier-summary { margin-top: auto; margin-bottom: auto; }
+  .tier-summary .ts-total { font-size: 15px; color: var(--sub); margin-bottom: 14px; }
+  .tier-summary .ts-total b { font-size: 30px; color: var(--ink); margin: 0 4px; font-variant-numeric: tabular-nums; }
+  .ts-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; margin-bottom: 14px; }
+  .ts-row .name { font-size: 14px; }
+  .ts-row .name i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .ts-row .num { font-size: 14px; color: var(--sub); text-align: right; font-variant-numeric: tabular-nums; }
+  .ts-row .num b { font-size: 18px; color: var(--ink); margin-right: 2px; }
+  .ts-row .track { grid-column: 1 / -1; height: 8px; background: #eef0f3; border-radius: 4px; overflow: hidden; }
+  .ts-row .fill { height: 100%; border-radius: 4px; }
   @media (max-width: 860px) { .charts { grid-template-columns: 1fr; } }
   .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
   .filters input, .filters select { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; background: #fff; }
@@ -122,9 +132,8 @@
       <div id="chart" class="chart"></div>
     </section>
     <section class="panel">
-      <div class="panel-head"><h2>구분별 발의 추이</h2>
-        <div class="legend" id="tierLegend"></div></div>
-      <div id="tierChart" class="chart"></div>
+      <div class="panel-head"><h2>구분별 현황</h2></div>
+      <div id="tierSummary" class="tier-summary"></div>
     </section>
   </div>
   <div id="tip"></div>
@@ -236,17 +245,14 @@ function bindTips(el, tips) {
 }
 
 function renderChart() {
-  const counts = {}, byTier = {};
+  const counts = {};
   ALL.forEach((b) => {
     const m = (b.date || "").slice(0, 7); if (!m) return;
     counts[m] = (counts[m] || 0) + 1;
-    const t = TIER_COLORS[b.tier] ? b.tier : null;
-    if (t) { byTier[m] = byTier[m] || { "1": 0, "2": 0, "3": 0 }; byTier[m][t]++; }
   });
   const months = Object.keys(counts).sort().slice(-12);
-  $("tierLegend").innerHTML = ["1", "2", "3"].map((t) => `<span><i style="background:${TIER_COLORS[t]}"></i>${TIER_NAMES[t]}</span>`).join("");
   if (!months.length) {
-    $("chart").innerHTML = $("tierChart").innerHTML = `<div class="empty">표시할 데이터가 없습니다</div>`; return;
+    $("chart").innerHTML = `<div class="empty">표시할 데이터가 없습니다</div>`; renderTierSummary(); return;
   }
   const W = 560, H = 190, padB = 22, padT = 18, plotH = H - padB - padT;
   const bw = W / months.length, barW = Math.min(bw * 0.6, 34);
@@ -268,30 +274,21 @@ function renderChart() {
   $("chart").innerHTML = svg + `<line x1="0" x2="${W}" y1="${H - padB}" y2="${H - padB}" stroke="#e3e6ea"/></svg>`;
   bindTips($("chart"), tips1);
 
-  // 오른쪽: 구분별 누적 막대 (아래부터 구분 1·2·3, 사이 2px 간격)
-  const tot = (m) => { const v = byTier[m] || {}; return (v["1"] || 0) + (v["2"] || 0) + (v["3"] || 0); };
-  const max2 = Math.max(1, ...months.map(tot));
-  let svg2 = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="구분별 월별 발의 건수">`;
-  const tips2 = [];
-  months.forEach((m, i) => {
-    const v = byTier[m] || { "1": 0, "2": 0, "3": 0 }, x = i * bw + (bw - barW) / 2;
-    let yTop = H - padB, segs = "";
-    const present = ["1", "2", "3"].filter((t) => v[t] > 0);
-    present.forEach((t, k) => {
-      const h = Math.max(2, (plotH * v[t]) / max2) - (k > 0 ? 2 : 0);
-      const y = yTop - h - (k > 0 ? 2 : 0);
-      const isTop = k === present.length - 1;
-      segs += `<path class="seg" fill="${TIER_COLORS[t]}" d="${isTop ? roundTop(x, y, barW, h) : `M${x},${y}h${barW}v${h}h${-barW}z`}"/>`;
-      yTop = y;
-    });
-    tips2.push(`<b>${m.replace("-", "년 ")}월</b> · 합계 ${tot(m)}건<br>` +
-      ["1", "2", "3"].map((t) => `<i style="background:${TIER_COLORS[t]}"></i>${TIER_NAMES[t]} ${v[t]}건`).join("<br>"));
-    svg2 += `<g class="col" data-i="${i}"><rect class="hit" x="${i * bw}" y="0" width="${bw}" height="${H - padB}"/>${segs}
-      ${tot(m) ? `<text x="${x + barW / 2}" y="${yTop - 5}" text-anchor="middle">${tot(m)}</text>` : ""}</g>`;
-    if (i % every === 0 || i === months.length - 1) svg2 += `<text x="${x + barW / 2}" y="${H - 5}" text-anchor="middle">${label(m)}</text>`;
-  });
-  $("tierChart").innerHTML = svg2 + `<line x1="0" x2="${W}" y1="${H - padB}" y2="${H - padB}" stroke="#e3e6ea"/></svg>`;
-  bindTips($("tierChart"), tips2);
+  renderTierSummary();
+}
+
+// 오른쪽: 구분별 현황 (총 ○건 중 구분별 건수)
+function renderTierSummary() {
+  const n = { "1": 0, "2": 0, "3": 0 };
+  ALL.forEach((b) => { if (n[b.tier] !== undefined) n[b.tier]++; });
+  const total = ALL.length;
+  $("tierSummary").innerHTML = `<div class="ts-total">관련 법안 총<b>${total.toLocaleString()}</b>건 중</div>` +
+    ["1", "2", "3"].map((t) => {
+      const pct = total ? Math.round((n[t] / total) * 100) : 0;
+      return `<div class="ts-row"><div class="name"><i style="background:${TIER_COLORS[t]}"></i>${TIER_NAMES[t]}</div>
+        <div class="num"><b>${n[t].toLocaleString()}</b>건 (${pct}%)</div>
+        <div class="track"><div class="fill" style="width:${pct}%;background:${TIER_COLORS[t]}"></div></div></div>`;
+    }).join("");
 }
 
 // 위쪽 모서리만 둥근 막대
