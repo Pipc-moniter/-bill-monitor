@@ -3,5 +3,6 @@
   "assembly_age": "22",
   "start_date": "2024-05-30",
   "model": "claude-haiku-5-5",
-  "max_classify_per_run": 1500
+  "max_classify_per_run": 1500,
+  "check_bill_nos": ["2220718", "2220797", "2220807", "2220816", "2220854", "2220858"]
 }

@@ -52,9 +52,8 @@ def http_get(url, timeout=30, retries=3):
             time.sleep(2 * (i + 1))
 
 
-def fetch_bill_list(api_key):
-    """해당 대수 의원발의 법률안 전체를 페이지 단위로 받는다."""
-    rows, page, size = [], 1, 1000
+def fetch_bill_list_once(api_key, size):
+    rows, page, total = [], 1, 0
     while True:
         q = urllib.parse.urlencode({
             "KEY": api_key, "Type": "json", "pIndex": page, "pSize": size,
@@ -71,12 +70,33 @@ def fetch_bill_list(api_key):
         total = block[0]["head"][0]["list_total_count"]
         page_rows = block[1].get("row", [])
         rows.extend(page_rows)
-        print(f"  목록 {len(rows)}/{total}")
         if len(rows) >= total or not page_rows:
             break
         page += 1
         time.sleep(0.3)
-    return rows
+    return rows, total
+
+
+def fetch_bill_list(api_key):
+    """해당 대수 의원발의 법률안 전체를 받는다.
+
+    국회 API는 페이지를 넘길 때 순서가 흔들려 같은 법안이 중복되고 일부가 빠질 수 있다.
+    그래서 의안ID 기준으로 중복을 없애고, 전체 건수가 다 모일 때까지 여러 번 받아 합친다.
+    """
+    unique, total = {}, 0
+    for attempt, size in enumerate([1000, 500, 300, 200, 100], start=1):
+        rows, total = fetch_bill_list_once(api_key, size)
+        before = len(unique)
+        for r in rows:
+            unique[r["BILL_ID"]] = r
+        dup = len(rows) - len({r["BILL_ID"] for r in rows})
+        print(f"  {attempt}회차(페이지 {size}건): 받은 {len(rows)}건, 중복 {dup}건, "
+              f"새로 추가 {len(unique) - before}건 → 누적 {len(unique)}/{total}")
+        if len(unique) >= total:
+            break
+    if len(unique) < total:
+        print(f"  ⚠ 전체 {total}건 중 {total - len(unique)}건은 받지 못했습니다(다음 실행에서 다시 시도).")
+    return list(unique.values())
 
 
 def fetch_summary(api_key, bill_no):
@@ -99,8 +119,9 @@ def fetch_summary(api_key, bill_no):
 
 
 def classify(api_key, bill, summary):
-    prompt = f"""당신은 개인정보보호위원회의 입법 모니터링 담당자입니다.
-아래 기준에 따라 법안이 개인정보와 관련 있는지 판단하세요.
+    prompt = f"""당신은 개인정보보호위원회의 주간 입법동향 모니터링 담당자입니다.
+아래 기준에 따라 법안을 ①, ②, ③, 무관 중 하나로 분류하세요.
+이 분류는 담당자가 최종 검토하기 전 1차 선별이므로, 놓치는 것보다 넓게 고르는 편이 낫습니다.
 
 <기준>
 {CRITERIA}
@@ -112,11 +133,11 @@ def classify(api_key, bill, summary):
 {summary or '(본문 없음: 의안명만으로 판단)'}
 </법안>
 
-다음 JSON 한 줄로만 답하세요.
-{{"relevant": true 또는 false, "reason": "판단 근거 한 문장"}}"""
+다음 JSON 한 줄로만 답하세요. tier는 "1", "2", "3", "0"(무관) 중 하나입니다.
+{{"tier": "1", "reason": "판단 근거 한 문장"}}"""
     body = json.dumps({
         "model": SETTINGS["model"],
-        "max_tokens": 200,
+        "max_tokens": 250,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
     headers = {
@@ -135,7 +156,9 @@ def classify(api_key, bill, summary):
             text = "".join(c.get("text", "") for c in res.get("content", []))
             m = re.search(r"\{.*\}", text, re.DOTALL)
             parsed = json.loads(m.group(0))
-            return {"relevant": bool(parsed.get("relevant")), "reason": str(parsed.get("reason", ""))[:300]}
+            tier = str(parsed.get("tier", "0")).strip()
+            tier = tier if tier in ("1", "2", "3") else "0"
+            return {"tier": tier, "relevant": tier != "0", "reason": str(parsed.get("reason", ""))[:300]}
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 529):
                 time.sleep(5 * (i + 1))
@@ -178,6 +201,10 @@ def main():
 
     print("1) 법안 목록 수집")
     rows = fetch_bill_list(assembly_key)
+    # 수집 누락 점검: 과거 주간 보고서에 실린 법안이 목록에 있는지 확인
+    nos = {str(r.get("BILL_NO", "")) for r in rows}
+    for no in SETTINGS.get("check_bill_nos", []):
+        print(f"  점검 {no}: {'있음' if str(no) in nos else '없음(수집 누락)'}")
     rows = [r for r in rows if (r.get("PROPOSE_DT") or "") >= SETTINGS["start_date"]]
     print(f"  기간 내 법안 {len(rows)}건")
 
@@ -226,9 +253,9 @@ def main():
         if no in exclude:
             continue
         if no in include:
-            reason, source = include[no], "manual"
-        elif c and c.get("relevant"):
-            reason, source = c.get("reason", ""), "ai"
+            reason, source, tier = include[no], "manual", "M"
+        elif c and c.get("h") == CRITERIA_HASH and c.get("relevant"):
+            reason, source, tier = c.get("reason", ""), "ai", c.get("tier", "2")
         else:
             continue
         bills.append({
@@ -241,6 +268,7 @@ def main():
             "status": r.get("PROC_RESULT") or "계류",
             "link": r.get("DETAIL_LINK") or DETAIL_URL.format(r["BILL_ID"]),
             "reason": reason,
+            "tier": tier,
             "source": source,
             "title_only": bool(c and not c.get("has_summary")),
         })
@@ -263,7 +291,16 @@ def main():
         "pending": pending,
         "bills": bills,
     })
-    print(f"  관련 법안 {len(bills)}건 / 검토 {len(rows)}건 / 분류 대기 {pending}건")
+    # 검토한 법안 전체 목록(무관 포함) — 주간 보고서와 대조·검증용
+    reviewed = []
+    for r in rows:
+        c = cache.get(r["BILL_ID"])
+        if c and c.get("h") == CRITERIA_HASH:
+            reviewed.append([str(r.get("BILL_NO", "")), r.get("PROPOSE_DT", ""), r.get("BILL_NAME", ""),
+                             c.get("tier", "0"), c.get("reason", "")])
+    reviewed.sort(key=lambda x: (x[1], x[0]), reverse=True)
+    save_json(os.path.join(ROOT, "data/reviewed.json"), reviewed)
+    print(f"  관련 법안 {len(bills)}건 / 검토 {len(checked)}건 / 분류 대기 {pending}건")
 
 
 if __name__ == "__main__":

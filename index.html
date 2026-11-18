@@ -49,6 +49,11 @@
   .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #eef0f3; color: var(--sub); white-space: nowrap; }
   .badge.done { background: #e6f4ec; color: var(--ok); }
   .badge.pend { background: var(--accent-soft); color: var(--accent); }
+  .tier { display: inline-block; min-width: 26px; text-align: center; font-size: 12px; font-weight: 700; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
+  .tier.t1 { background: #fde8e8; color: #b42318; }
+  .tier.t2 { background: #fff4e0; color: #a86400; }
+  .tier.t3 { background: #eef0f3; color: #5b6470; }
+  .tier.tM { background: #e8f0fb; color: #1f5fbf; }
   .tag { font-size: 11px; color: var(--warn); margin-left: 4px; }
   tr.detail td { background: #fafbfc; color: var(--sub); font-size: 14px; }
   .pager { display: flex; justify-content: center; gap: 6px; margin-top: 14px; }
@@ -93,6 +98,7 @@
       <input type="date" id="from" aria-label="시작일">
       <span class="meta">~</span>
       <input type="date" id="to" aria-label="종료일">
+      <select id="tierSel"><option value="">전체 구분</option><option value="1">① 개인정보 보호법 직접 관련</option><option value="2">② 개인정보 관련 내용 포함</option><option value="3">③ 개인정보위 정책 검토 필요</option></select>
       <select id="status"><option value="">전체 상태</option></select>
       <button id="reset">초기화</button>
       <span class="count" id="count"></span>
@@ -101,6 +107,7 @@
       <thead>
         <tr>
           <th class="num">연번</th>
+          <th>구분</th>
           <th class="hide-m">의안번호</th>
           <th>의안명</th>
           <th class="hide-m">제안자</th>
@@ -152,16 +159,16 @@ async function load() {
     apply();
   } catch (e) {
     $("updated").textContent = "데이터를 불러오지 못했습니다";
-    $("tbody").innerHTML = `<tr><td colspan="7" class="empty">data/bills.json을 읽을 수 없습니다.</td></tr>`;
+    $("tbody").innerHTML = `<tr><td colspan="8" class="empty">data/bills.json을 읽을 수 없습니다.</td></tr>`;
   }
 }
 
 function initFilters() {
   const statuses = [...new Set(ALL.map((b) => b.status))].sort();
   $("status").innerHTML += statuses.map((s) => `<option>${esc(s)}</option>`).join("");
-  ["q", "from", "to", "status"].forEach((id) => $(id).addEventListener("input", () => { page = 1; apply(); }));
+  ["q", "from", "to", "status", "tierSel"].forEach((id) => $(id).addEventListener("input", () => { page = 1; apply(); }));
   $("reset").addEventListener("click", () => {
-    ["q", "from", "to", "status"].forEach((id) => ($(id).value = ""));
+    ["q", "from", "to", "status", "tierSel"].forEach((id) => ($(id).value = ""));
     page = 1; apply();
   });
 }
@@ -195,12 +202,18 @@ function renderChart() {
 
 function apply() {
   const q = $("q").value.trim().toLowerCase();
-  const from = $("from").value, to = $("to").value, st = $("status").value;
+  const from = $("from").value, to = $("to").value, st = $("status").value, tr = $("tierSel").value;
   VIEW = ALL.filter((b) =>
     (!q || [b.name, b.proposer, b.rep, b.no].some((v) => String(v).toLowerCase().includes(q))) &&
-    (!from || b.date >= from) && (!to || b.date <= to) && (!st || b.status === st));
+    (!from || b.date >= from) && (!to || b.date <= to) && (!st || b.status === st) && (!tr || b.tier === tr));
   $("count").textContent = `${VIEW.length.toLocaleString()}건`;
   renderTable();
+}
+
+const TIER = { "1": ["①", "개인정보 보호법 직접 관련"], "2": ["②", "개인정보 관련 내용 포함"], "3": ["③", "개인정보위 정책 검토 필요"], "M": ["수동", "담당자 지정"] };
+function tierBadge(t) {
+  const v = TIER[t] || TIER["2"];
+  return `<span class="tier t${esc(t || "2")}" title="${v[1]}">${v[0]}</span>`;
 }
 
 function renderTable() {
@@ -209,13 +222,14 @@ function renderTable() {
   const start = (page - 1) * PAGE;
   const rows = VIEW.slice(start, start + PAGE);
   if (!rows.length) {
-    $("tbody").innerHTML = `<tr><td colspan="7" class="empty">조건에 맞는 법안이 없습니다</td></tr>`;
+    $("tbody").innerHTML = `<tr><td colspan="8" class="empty">조건에 맞는 법안이 없습니다</td></tr>`;
   } else {
     $("tbody").innerHTML = rows.map((b, i) => {
       const badge = b.status === "계류" ? "pend" : "done";
       const tag = b.source === "manual" ? `<span class="tag">수동 지정</span>` : b.title_only ? `<span class="tag">제목 기준</span>` : "";
       let html = `<tr class="row" data-no="${esc(b.no)}">
         <td class="num">${start + i + 1}</td>
+        <td>${tierBadge(b.tier)}</td>
         <td class="hide-m nowrap">${esc(b.no)}</td>
         <td><a href="${esc(b.link)}" target="_blank" rel="noopener">${esc(b.name)}</a>${tag}</td>
         <td class="hide-m">${esc(b.proposer)}</td>
@@ -223,7 +237,7 @@ function renderTable() {
         <td class="nowrap">${esc(b.date)}</td>
         <td><span class="badge ${badge}">${esc(b.status)}</span></td></tr>`;
       if (openNo === b.no) {
-        html += `<tr class="detail"><td></td><td colspan="6"><b>분류 근거</b> ${esc(b.reason || "-")}${b.committee ? `<br><b>소관위원회</b> ${esc(b.committee)}` : ""}</td></tr>`;
+        html += `<tr class="detail"><td></td><td colspan="7"><b>분류 근거</b> ${esc(b.reason || "-")}${b.committee ? `<br><b>소관위원회</b> ${esc(b.committee)}` : ""}</td></tr>`;
       }
       return html;
     }).join("");
