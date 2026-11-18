@@ -122,7 +122,7 @@ def fetch_summary(api_key, bill_no):
 def build_prompt(bill, summary):
     return f"""당신은 개인정보보호위원회의 주간 입법동향 모니터링 담당자입니다.
 아래 기준에 따라 법안을 ①, ②, ③, 무관 중 하나로 분류하세요.
-이 분류는 담당자가 최종 검토하기 전 1차 선별이므로, 놓치는 것보다 넓게 고르는 편이 낫습니다.
+주간 입법동향 보고서에 실을 법안만 고르세요. 조문에 근거가 있어야 하며, "수반될 수 있다"는 추측만으로는 고르지 마세요.
 
 <기준>
 {CRITERIA}
@@ -276,7 +276,7 @@ LIMITER = RateLimiter(int(SETTINGS.get("anthropic_rpm", 40)))
 def classify(api_key, bill, summary):
     prompt = f"""당신은 개인정보보호위원회의 주간 입법동향 모니터링 담당자입니다.
 아래 기준에 따라 법안을 ①, ②, ③, 무관 중 하나로 분류하세요.
-이 분류는 담당자가 최종 검토하기 전 1차 선별이므로, 놓치는 것보다 넓게 고르는 편이 낫습니다.
+주간 입법동향 보고서에 실을 법안만 고르세요. 조문에 근거가 있어야 하며, "수반될 수 있다"는 추측만으로는 고르지 마세요.
 
 <기준>
 {CRITERIA}
@@ -413,7 +413,7 @@ def main():
             sm = summaries.get(r["BILL_ID"], "")
             meta[cid] = {"bill_id": r["BILL_ID"], "has_summary": bool(sm), "h": CRITERIA_HASH}
             requests.append({"custom_id": cid, "params": {
-                "model": SETTINGS["model"], "max_tokens": 600,
+                "model": SETTINGS["model"], "max_tokens": 2000,
                 "messages": [{"role": "user", "content": build_prompt(r, sm)}]}})
         b = anthropic_call(anthropic_key, "POST", "/v1/messages/batches", {"requests": requests})
         print(f"  AI 일괄 처리 요청 완료: {len(requests)}건 (보통 수 분~1시간 소요)")
