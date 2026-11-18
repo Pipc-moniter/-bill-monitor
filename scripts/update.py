@@ -134,21 +134,32 @@ def build_prompt(bill, summary):
 {summary or '(본문 없음: 의안명만으로 판단)'}
 </법안>
 
-다음 JSON 한 줄로만 답하세요. tier는 "1", "2", "3", "0"(무관) 중 하나입니다.
+다른 설명 없이 다음 JSON 한 줄로만 답하세요. tier는 "1", "2", "3", "0"(무관) 중 하나이고,
+reason은 100자 이내 한 문장이며 큰따옴표(")를 쓰지 마세요.
 {{"tier": "1", "reason": "판단 근거 한 문장"}}"""
 
 
 def parse_answer(text):
-    m = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not m:
+    """AI 답변에서 구분(tier)과 근거를 꺼낸다. JSON이 잘리거나 따옴표가 섞여도 최대한 읽어낸다."""
+    text = text or ""
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            parsed = json.loads(m.group(0))
+            tier = str(parsed.get("tier", "")).strip()
+            if tier in ("0", "1", "2", "3"):
+                return {"tier": tier, "relevant": tier != "0", "reason": str(parsed.get("reason", ""))[:300]}
+        except json.JSONDecodeError:
+            pass
+    # JSON으로 못 읽으면 글자 패턴으로 찾는다
+    t = re.search(r'"?tier"?\s*[:=]\s*"?\s*([0-3①②③])', text)
+    if not t:
         return None
-    try:
-        parsed = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
-    tier = str(parsed.get("tier", "0")).strip()
-    tier = tier if tier in ("1", "2", "3") else "0"
-    return {"tier": tier, "relevant": tier != "0", "reason": str(parsed.get("reason", ""))[:300]}
+    tier = {"①": "1", "②": "2", "③": "3"}.get(t.group(1), t.group(1))
+    r = re.search(r'"?reason"?\s*[:=]\s*"?(.*)', text, re.DOTALL)
+    reason = r.group(1) if r else ""
+    reason = re.sub(r'["}\s`]+$', "", reason.replace("\n", " ")).strip()
+    return {"tier": tier, "relevant": tier != "0", "reason": reason[:300]}
 
 
 def anthropic_call(api_key, method, path, body=None, raw=False):
@@ -215,6 +226,13 @@ def collect_batch(api_key, batch_id, cache, meta, deadline):
             msg = res.get("message", {})
             parsed = parse_answer("".join(c.get("text", "") for c in msg.get("content", [])))
         info = meta.get(item.get("custom_id"), {})
+        if not parsed and bad < 3:
+            if res.get("type") == "succeeded":
+                msg = res.get("message", {})
+                raw = "".join(c.get("text", "") for c in msg.get("content", []))
+                print(f"    [실패 예시] 중단사유={msg.get('stop_reason')} 답변={raw[:300]!r}")
+            else:
+                print(f"    [실패 예시] {json.dumps(res, ensure_ascii=False)[:300]}")
         if parsed and info.get("h") == CRITERIA_HASH:
             cache[info["bill_id"]] = {"h": CRITERIA_HASH, "has_summary": info.get("has_summary", False), **parsed}
             ok += 1
@@ -270,7 +288,8 @@ def classify(api_key, bill, summary):
 {summary or '(본문 없음: 의안명만으로 판단)'}
 </법안>
 
-다음 JSON 한 줄로만 답하세요. tier는 "1", "2", "3", "0"(무관) 중 하나입니다.
+다른 설명 없이 다음 JSON 한 줄로만 답하세요. tier는 "1", "2", "3", "0"(무관) 중 하나이고,
+reason은 100자 이내 한 문장이며 큰따옴표(")를 쓰지 마세요.
 {{"tier": "1", "reason": "판단 근거 한 문장"}}"""
     body = json.dumps({
         "model": SETTINGS["model"],
@@ -394,7 +413,7 @@ def main():
             sm = summaries.get(r["BILL_ID"], "")
             meta[cid] = {"bill_id": r["BILL_ID"], "has_summary": bool(sm), "h": CRITERIA_HASH}
             requests.append({"custom_id": cid, "params": {
-                "model": SETTINGS["model"], "max_tokens": 250,
+                "model": SETTINGS["model"], "max_tokens": 600,
                 "messages": [{"role": "user", "content": build_prompt(r, sm)}]}})
         b = anthropic_call(anthropic_key, "POST", "/v1/messages/batches", {"requests": requests})
         print(f"  AI 일괄 처리 요청 완료: {len(requests)}건 (보통 수 분~1시간 소요)")
