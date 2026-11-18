@@ -40,10 +40,23 @@
   .stat span { color: var(--sub); font-size: 13px; }
   .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
   .panel h2 { font-size: 15px; margin: 0 0 12px; }
-  #chart svg { width: 100%; height: 180px; display: block; }
-  #chart .bar { fill: var(--accent); }
-  #chart .bar:hover { fill: #164a96; }
-  #chart text { font-size: 10px; fill: var(--sub); }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .charts .panel { margin-bottom: 0; }
+  .charts .panel { display: flex; flex-direction: column; }
+  .chart { margin-top: auto; }
+  .chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .chart text { font-size: 11px; fill: var(--sub); }
+  .chart .total { fill: #6b7785; }
+  .chart .col:hover .seg, .chart .col:hover .total { opacity: .8; }
+  .chart .hit { fill: transparent; cursor: default; }
+  .panel-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 12px; }
+  .panel-head h2 { margin: 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--sub); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  #tip { position: fixed; pointer-events: none; background: #1b1f24; color: #fff; font-size: 12px; line-height: 1.6;
+    padding: 8px 10px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.18); display: none; z-index: 10; white-space: nowrap; }
+  #tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+  @media (max-width: 860px) { .charts { grid-template-columns: 1fr; } }
   .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
   .filters input, .filters select { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; background: #fff; }
   .filters input[type=search] { flex: 1; min-width: 220px; }
@@ -62,10 +75,10 @@
   .badge.done { background: #e6f4ec; color: var(--ok); }
   .badge.pend { background: var(--accent-soft); color: var(--accent); }
   .tier { display: inline-block; min-width: 26px; text-align: center; font-size: 12px; font-weight: 700; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
-  .tier.t1 { background: #fde8e8; color: #b42318; }
-  .tier.t2 { background: #fff4e0; color: #a86400; }
-  .tier.t3 { background: #eef0f3; color: #5b6470; }
-  .tier.tM { background: #e8f0fb; color: #1f5fbf; }
+  .tier.t1 { background: #e3eefb; color: #1c5aa6; }
+  .tier.t2 { background: #fdeee6; color: #b4461b; }
+  .tier.t3 { background: #e2f5ee; color: #12775a; }
+  .tier.tM { background: #eef0f3; color: #5b6470; }
   .tag { font-size: 11px; color: var(--warn); margin-left: 4px; }
   tr.detail td { background: #fafbfc; color: var(--sub); font-size: 14px; }
   .pager { display: flex; justify-content: center; gap: 6px; margin-top: 14px; }
@@ -103,10 +116,18 @@
     <div class="stat"><span>처리 완료</span><b id="s-done">-</b></div>
   </section>
 
-  <section class="panel">
-    <h2>월별 발의 추이</h2>
-    <div id="chart"></div>
-  </section>
+  <div class="charts">
+    <section class="panel">
+      <div class="panel-head"><h2>월별 발의 추이</h2></div>
+      <div id="chart" class="chart"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>구분별 발의 추이</h2>
+        <div class="legend" id="tierLegend"></div></div>
+      <div id="tierChart" class="chart"></div>
+    </section>
+  </div>
+  <div id="tip"></div>
 
   <section class="panel">
     <div class="filters">
@@ -114,7 +135,7 @@
       <input type="date" id="from" aria-label="시작일">
       <span class="meta">~</span>
       <input type="date" id="to" aria-label="종료일">
-      <select id="tierSel"><option value="">전체 구분</option><option value="1">① 개인정보 보호법 직접 관련</option><option value="2">② 개인정보 관련 내용 포함</option><option value="3">③ 개인정보위 정책 검토 필요</option></select>
+      <select id="tierSel"><option value="">전체 구분</option><option value="1">구분 1 (개인정보 보호법)</option><option value="2">구분 2 (개인정보 수집 제공 등 처리 수반)</option><option value="3">구분 3 (개인정보위 정책상 검토 필요)</option></select>
       <select id="status"><option value="">전체 상태</option></select>
       <button id="reset">초기화</button>
       <span class="count" id="count"></span>
@@ -197,23 +218,86 @@ function renderStats() {
   $("s-done").textContent = ALL.filter((b) => b.status !== "계류").length.toLocaleString();
 }
 
-function renderChart() {
-  const counts = {};
-  ALL.forEach((b) => { const m = (b.date || "").slice(0, 7); if (m) counts[m] = (counts[m] || 0) + 1; });
-  const months = Object.keys(counts).sort().slice(-24);
-  if (!months.length) { $("chart").innerHTML = `<div class="empty">표시할 데이터가 없습니다</div>`; return; }
-  const W = 1000, H = 180, padB = 22, padT = 16;
-  const max = Math.max(...months.map((m) => counts[m]));
-  const bw = W / months.length;
-  let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="월별 발의 건수">`;
-  months.forEach((m, i) => {
-    const h = ((H - padB - padT) * counts[m]) / max;
-    const x = i * bw + bw * 0.18, w = bw * 0.64, y = H - padB - h;
-    svg += `<rect class="bar" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>${m}: ${counts[m]}건</title></rect>`;
-    svg += `<text x="${x + w / 2}" y="${y - 4}" text-anchor="middle">${counts[m]}</text>`;
-    if (i % Math.ceil(months.length / 12) === 0) svg += `<text x="${x + w / 2}" y="${H - 6}" text-anchor="middle">${m.slice(2).replace("-", ".")}</text>`;
+// 구분별 색: 표의 구분 배지와 같은 색을 쓴다
+const TIER_COLORS = { "1": "#2a78d6", "2": "#eb6834", "3": "#1baf7a" };
+const TIER_NAMES = { "1": "구분 1 (개인정보 보호법)", "2": "구분 2 (개인정보 수집 제공 등 처리 수반)", "3": "구분 3 (개인정보위 정책상 검토 필요)" };
+
+function showTip(e, html) {
+  const t = $("tip"); t.innerHTML = html; t.style.display = "block";
+  const x = Math.min(e.clientX + 14, window.innerWidth - t.offsetWidth - 8);
+  t.style.left = x + "px"; t.style.top = (e.clientY - t.offsetHeight - 10) + "px";
+}
+function hideTip() { $("tip").style.display = "none"; }
+function bindTips(el, tips) {
+  el.querySelectorAll(".col").forEach((g) => {
+    g.addEventListener("mousemove", (e) => showTip(e, tips[g.dataset.i]));
+    g.addEventListener("mouseleave", hideTip);
   });
-  $("chart").innerHTML = svg + "</svg>";
+}
+
+function renderChart() {
+  const counts = {}, byTier = {};
+  ALL.forEach((b) => {
+    const m = (b.date || "").slice(0, 7); if (!m) return;
+    counts[m] = (counts[m] || 0) + 1;
+    const t = TIER_COLORS[b.tier] ? b.tier : null;
+    if (t) { byTier[m] = byTier[m] || { "1": 0, "2": 0, "3": 0 }; byTier[m][t]++; }
+  });
+  const months = Object.keys(counts).sort().slice(-12);
+  $("tierLegend").innerHTML = ["1", "2", "3"].map((t) => `<span><i style="background:${TIER_COLORS[t]}"></i>${TIER_NAMES[t]}</span>`).join("");
+  if (!months.length) {
+    $("chart").innerHTML = $("tierChart").innerHTML = `<div class="empty">표시할 데이터가 없습니다</div>`; return;
+  }
+  const W = 560, H = 190, padB = 22, padT = 18, plotH = H - padB - padT;
+  const bw = W / months.length, barW = Math.min(bw * 0.6, 34);
+  const label = (m) => m.slice(2).replace("-", ".");
+  const every = Math.ceil(months.length / 6);
+
+  // 왼쪽: 월별 전체
+  const max1 = Math.max(...months.map((m) => counts[m]));
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="월별 발의 건수">`;
+  const tips1 = [];
+  months.forEach((m, i) => {
+    const h = Math.max(2, (plotH * counts[m]) / max1), x = i * bw + (bw - barW) / 2, y = H - padB - h;
+    tips1.push(`<b>${m.replace("-", "년 ")}월</b><br>관련 법안 ${counts[m]}건`);
+    svg += `<g class="col" data-i="${i}"><rect class="hit" x="${i * bw}" y="0" width="${bw}" height="${H - padB}"/>
+      <path class="total" d="${roundTop(x, y, barW, h)}"/>
+      <text x="${x + barW / 2}" y="${y - 5}" text-anchor="middle">${counts[m]}</text></g>`;
+    if (i % every === 0 || i === months.length - 1) svg += `<text x="${x + barW / 2}" y="${H - 5}" text-anchor="middle">${label(m)}</text>`;
+  });
+  $("chart").innerHTML = svg + `<line x1="0" x2="${W}" y1="${H - padB}" y2="${H - padB}" stroke="#e3e6ea"/></svg>`;
+  bindTips($("chart"), tips1);
+
+  // 오른쪽: 구분별 누적 막대 (아래부터 구분 1·2·3, 사이 2px 간격)
+  const tot = (m) => { const v = byTier[m] || {}; return (v["1"] || 0) + (v["2"] || 0) + (v["3"] || 0); };
+  const max2 = Math.max(1, ...months.map(tot));
+  let svg2 = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="구분별 월별 발의 건수">`;
+  const tips2 = [];
+  months.forEach((m, i) => {
+    const v = byTier[m] || { "1": 0, "2": 0, "3": 0 }, x = i * bw + (bw - barW) / 2;
+    let yTop = H - padB, segs = "";
+    const present = ["1", "2", "3"].filter((t) => v[t] > 0);
+    present.forEach((t, k) => {
+      const h = Math.max(2, (plotH * v[t]) / max2) - (k > 0 ? 2 : 0);
+      const y = yTop - h - (k > 0 ? 2 : 0);
+      const isTop = k === present.length - 1;
+      segs += `<path class="seg" fill="${TIER_COLORS[t]}" d="${isTop ? roundTop(x, y, barW, h) : `M${x},${y}h${barW}v${h}h${-barW}z`}"/>`;
+      yTop = y;
+    });
+    tips2.push(`<b>${m.replace("-", "년 ")}월</b> · 합계 ${tot(m)}건<br>` +
+      ["1", "2", "3"].map((t) => `<i style="background:${TIER_COLORS[t]}"></i>${TIER_NAMES[t]} ${v[t]}건`).join("<br>"));
+    svg2 += `<g class="col" data-i="${i}"><rect class="hit" x="${i * bw}" y="0" width="${bw}" height="${H - padB}"/>${segs}
+      ${tot(m) ? `<text x="${x + barW / 2}" y="${yTop - 5}" text-anchor="middle">${tot(m)}</text>` : ""}</g>`;
+    if (i % every === 0 || i === months.length - 1) svg2 += `<text x="${x + barW / 2}" y="${H - 5}" text-anchor="middle">${label(m)}</text>`;
+  });
+  $("tierChart").innerHTML = svg2 + `<line x1="0" x2="${W}" y1="${H - padB}" y2="${H - padB}" stroke="#e3e6ea"/></svg>`;
+  bindTips($("tierChart"), tips2);
+}
+
+// 위쪽 모서리만 둥근 막대
+function roundTop(x, y, w, h) {
+  const r = Math.min(4, w / 2, h);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
 }
 
 function apply() {
@@ -226,7 +310,7 @@ function apply() {
   renderTable();
 }
 
-const TIER = { "1": ["①", "개인정보 보호법 직접 관련"], "2": ["②", "개인정보 관련 내용 포함"], "3": ["③", "개인정보위 정책 검토 필요"], "M": ["수동", "담당자 지정"] };
+const TIER = { "1": ["①", "구분 1 (개인정보 보호법)"], "2": ["②", "구분 2 (개인정보 수집 제공 등 처리 수반)"], "3": ["③", "구분 3 (개인정보위 정책상 검토 필요)"], "M": ["수동", "담당자 지정"] };
 function tierBadge(t) {
   const v = TIER[t] || TIER["2"];
   return `<span class="tier t${esc(t || "2")}" title="${v[1]}">${v[0]}</span>`;
